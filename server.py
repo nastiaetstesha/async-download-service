@@ -1,10 +1,19 @@
 import asyncio
-from datetime import datetime
-from aiohttp import web
 import aiofiles
 import contextlib
+import logging
+
+from datetime import datetime
+from aiohttp import web
 from pathlib import Path
 from urllib.parse import quote
+
+# INFO
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("archive")
 
 
 async def archive(request: web.Request) -> web.StreamResponse:
@@ -50,6 +59,7 @@ async def archive(request: web.Request) -> web.StreamResponse:
         cwd=str(target_dir),
     )
 
+    total = 0
     try:
         assert proc.stdout is not None
         while True:
@@ -57,7 +67,12 @@ async def archive(request: web.Request) -> web.StreamResponse:
             if not chunk:
                 break
 
+            total += len(chunk)
+
+            log.debug("Sending archive chunk ... (%d bytes)", len(chunk))
+
             if request.transport is None or request.transport.is_closing():
+                log.info("Client closed connection hash=%s sent=%d bytes", archive_hash, total)
                 proc.terminate()
                 with contextlib.suppress(ProcessLookupError):
                     await proc.wait()
@@ -66,6 +81,7 @@ async def archive(request: web.Request) -> web.StreamResponse:
             try:
                 await resp.write(chunk)
             except (ConnectionResetError, BrokenPipeError):
+                log.info("Write failed (client disconnect) hash=%s sent=%d bytes", archive_hash, total)
                 proc.terminate()
                 with contextlib.suppress(ProcessLookupError):
                     await proc.wait()
@@ -75,16 +91,24 @@ async def archive(request: web.Request) -> web.StreamResponse:
         rc = await proc.wait()
         if rc != 0:
             err = (await proc.stderr.read()).decode(errors="ignore")
+            log.error("zip failed rc=%s hash=%s stderr=%r", rc, archive_hash, err)
             raise web.HTTPInternalServerError(text=f"zip failed: {err}")
 
         await resp.write_eof()
+        log.info("Finished hash=%s total_sent=%d bytes", archive_hash, total)
         return resp
 
     except asyncio.CancelledError:
+        log.info("Request cancelled hash=%s sent=%d bytes", archive_hash, total)
         proc.terminate()
         with contextlib.suppress(Exception):
             await proc.wait()
         raise
+
+    except Exception as e:
+        log.exception("Unhandled error hash=%s after_sent=%d bytes: %s", archive_hash, total, e)
+        raise
+
     finally:
         with contextlib.suppress(Exception):
             await resp.write_eof()
