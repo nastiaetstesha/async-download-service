@@ -2,8 +2,9 @@ import asyncio
 import aiofiles
 import contextlib
 import logging
+import os
+import signal
 
-from datetime import datetime
 from aiohttp import web
 from pathlib import Path
 from urllib.parse import quote
@@ -14,6 +15,31 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("archive")
+
+
+async def _stop_zip(proc: asyncio.subprocess.Process, grace: float = 1.5):
+
+    if not proc or proc.returncode is not None:
+        return
+
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+
+    if pgid and pgid > 0:
+        os.killpg(pgid, signal.SIGTERM)
+    else:
+        proc.terminate()
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except asyncio.TimeoutError:
+        if pgid and pgid > 0:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+        await proc.wait()
 
 
 async def archive(request: web.Request) -> web.StreamResponse:
@@ -44,9 +70,6 @@ async def archive(request: web.Request) -> web.StreamResponse:
     resp.enable_chunked_encoding()
     await resp.prepare(request)
 
-    # архивируем ".", чтобы
-    # ─ нет лишней корневой папки с хэшем
-    # ─ сохраняется вся вложенность.
     cmd = [
         "zip", "-r", "-", ".",
         "-x", "*/__pycache__/*", "*.pyc", ".DS_Store", "*/.git/*"
@@ -57,10 +80,18 @@ async def archive(request: web.Request) -> web.StreamResponse:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(target_dir),
+        start_new_session=True,
     )
 
     total = 0
     try:
+        # ТЕСТ ИСКЛЮЧЕНИЙ
+        inj = request.rel_url.query.get("raise")
+        if inj == "index":
+            raise IndexError("Injected IndexError for testing")
+        if inj == "systemexit":
+            raise SystemExit("Injected SystemExit for testing")
+
         assert proc.stdout is not None
         while True:
             chunk = await proc.stdout.read(64 * 1024)
@@ -72,26 +103,30 @@ async def archive(request: web.Request) -> web.StreamResponse:
             log.debug("Sending archive chunk ... (%d bytes)", len(chunk))
 
             if request.transport is None or request.transport.is_closing():
-                log.info("Client closed connection hash=%s sent=%d bytes", archive_hash, total)
-                proc.terminate()
-                with contextlib.suppress(ProcessLookupError):
-                    await proc.wait()
+                log.info(
+                    "Download was interrupted (transport closing) hash=%s sent=%d bytes",
+                    archive_hash, total
+                )
+                await _stop_zip(proc)
                 return resp
 
             try:
                 await resp.write(chunk)
             except (ConnectionResetError, BrokenPipeError):
-                log.info("Write failed (client disconnect) hash=%s sent=%d bytes", archive_hash, total)
-                proc.terminate()
-                with contextlib.suppress(ProcessLookupError):
-                    await proc.wait()
+                log.info(
+                    "Download was interrupted - Write failed (client disconnect) hash=%s sent=%d bytes",
+                    archive_hash, total
+                )
+                await _stop_zip(proc)
                 return resp
 
-        # Проверим код возврата zip
         rc = await proc.wait()
         if rc != 0:
             err = (await proc.stderr.read()).decode(errors="ignore")
-            log.error("zip failed rc=%s hash=%s stderr=%r", rc, archive_hash, err)
+            log.error(
+                "zip failed rc=%s hash=%s stderr=%r", rc, archive_hash, err
+                )
+            await _stop_zip(proc)
             raise web.HTTPInternalServerError(text=f"zip failed: {err}")
 
         await resp.write_eof()
@@ -99,19 +134,33 @@ async def archive(request: web.Request) -> web.StreamResponse:
         return resp
 
     except asyncio.CancelledError:
-        log.info("Request cancelled hash=%s sent=%d bytes", archive_hash, total)
-        proc.terminate()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        log.info(
+            "Request cancelled hash=%s sent=%d bytes", archive_hash, total
+            )
+        await _stop_zip(proc)
         raise
 
     except Exception as e:
-        log.exception("Unhandled error hash=%s after_sent=%d bytes: %s", archive_hash, total, e)
+        log.exception(
+            "Unhandled error hash=%s after_sent=%d bytes: %s",
+            archive_hash, total, e
+        )
+        await _stop_zip(proc)
+        raise
+
+    except BaseException as e:
+        log.warning(
+            "Unhandled BaseException %s hash=%s sent=%d bytes",
+            type(e).__name__, archive_hash, total
+        )
+        await _stop_zip(proc)
         raise
 
     finally:
         with contextlib.suppress(Exception):
             await resp.write_eof()
+        with contextlib.suppress(Exception):
+            await _stop_zip(proc)
 
 
 async def handle_index_page(request):
