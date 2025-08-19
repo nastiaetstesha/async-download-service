@@ -48,7 +48,44 @@ python server.py
 GET http://host.ru/archive/3bea29ccabbbf64bdebcc055319c5745/
 GET http://host.ru/archive/af1ad8c76fda2e48ea9aed2937e972ea/
 ```
+Как менять настройки (без правки кода)
 
+На macOS/zsh:
+
+### 1) Выключить логирование
+`LOG=0 python server.py`
+
+### 2) Включить логирование уровня DEBUG
+`LOG=1 LOG_LEVEL=DEBUG python server.py`
+
+### 3) Включить «задержку» (ограничение скорости 80 кибит/с)
+`THROTTLE_KBPS=80 python server.py`
+
+### 4) Указать путь к каталогу с фотографиями
+`PHOTOS_DIR="/полный/путь/к/photos" python server.py`
+
+
+Дополнительно: для одного запроса можно временно перекрыть скорость параметром URL:
+
+`http://127.0.0.1:8080/archive/7kna/?kbps=30`
 # Цели проекта
 
 Код написан в учебных целях — это урок в курсе по Python и веб-разработке на сайте [Devman](https://dvmn.org).
+
+## Переменные окружения
+
+- `PHOTOS_DIR (string, путь)` - абсолютный путь /abs/path/... или относительный (от папки server.py), например ../test_photos
+
+- `LOG (bool)` - включает/выключает наше логирование (и access-лог aiohttp).
+Допустимые значения: 1, true, yes, on → вкл; 0, false, no, off → выкл (регистр не важен).
+По умолчанию: 1 (включено)
+
+- `LOG_LEVEL (string)` - уровень логов, используется только если LOG=1.
+Допустимые значения: DEBUG, INFO, WARNING, ERROR, CRITICAL.
+По умолчанию: INFO
+
+- `THROTTLE_KBPS (float ≥ 0)` - «задержка ответа» — ограничивает скорость отдачи архива.
+Единицы: кибит/сек (Kib/s). Пример: 80 ≈ 10 KiB/s.
+По умолчанию: 0 (без ограничения)
+
+
