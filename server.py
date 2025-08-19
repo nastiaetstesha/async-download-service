@@ -33,13 +33,13 @@ async def _stop_zip(proc: asyncio.subprocess.Process, grace: float = 1.5):
         proc.terminate()
 
     try:
-        await asyncio.wait_for(proc.wait(), timeout=grace)
+        await asyncio.wait_for(proc.communicate(), timeout=grace)
     except asyncio.TimeoutError:
         if pgid and pgid > 0:
             os.killpg(pgid, signal.SIGKILL)
         else:
             proc.kill()
-        await proc.wait()
+        await proc.communicate()
 
 
 async def archive(request: web.Request) -> web.StreamResponse:
