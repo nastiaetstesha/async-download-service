@@ -63,7 +63,8 @@ GET http://host.ru/archive/af1ad8c76fda2e48ea9aed2937e972ea/
 
 ### 4) Указать путь к каталогу с фотографиями
 `PHOTOS_DIR="/полный/путь/к/photos" python server.py`
-
+##### Полностью
+`PHOTOS_DIR=/полный/путь/к/photos LOG=1 LOG_LEVEL=DEBUG THROTTLE_KBPS=0  server.py`
 
 Дополнительно: для одного запроса можно временно перекрыть скорость параметром URL:
 

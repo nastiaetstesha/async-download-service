@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  async-download-service:
+    build: .
+    image: async-download-service:dev
+    container_name: async-download-service
+    ports:
+      - "8080:8080"
+    environment:
+      LOG: "${LOG:-1}"
+      LOG_LEVEL: "${LOG_LEVEL:-DEBUG}"
+      THROTTLE_KBPS: "${THROTTLE_KBPS:-0}"
+      PHOTOS_DIR: "/app/photos"
+    volumes:
+      - ./:/app:delegated
+      - ./test_photos:/app/photos:ro
+    # Перезапуск:
+    # restart: unless-stopped
